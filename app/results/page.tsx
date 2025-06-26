@@ -41,6 +41,7 @@ export default function ResultsPage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [scrollY, setScrollY] = useState(0)
   const [screenshotUrl, setScreenshotUrl] = useState<string>("")
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 })
   const [scrollPosition, setScrollPosition] = useState(0)
@@ -102,8 +103,14 @@ export default function ResultsPage() {
           // Take screenshot of the analyzed URL
           if (data.url) {
             try {
-              const width = Math.min(window.innerWidth, 1920) // Limit max width
-              const response = await fetch(`/api/proxy?url=${encodeURIComponent(data.url)}&width=${width}`)
+              const width = Math.min(window.innerWidth, 1920); // Limit max width
+              const height = Math.min(window.innerHeight, 1080);
+              const response = await fetch(
+                `/api/proxy?url=${encodeURIComponent(data.url)}` +
+                `&width=${width}` +
+                `&height=${height}` +
+                `&deviceScaleFactor=${window.devicePixelRatio || 1}`
+              )
               
               if (!response.ok) {
                 throw new Error(`Failed to capture screenshot: ${response.status}`)
@@ -167,13 +174,15 @@ export default function ResultsPage() {
     }
   }, [])
 
-  // Generate heatmap
+  // Generate heatmap with better error handling and scroll tracking
   const generateHeatmap = useCallback(() => {
     if (!canvasRef.current || !analysisData || !screenshotUrl || !imageRef.current) {
-      return
+      console.error('Missing required refs or data');
+      return;
     }
-
-    setIsGenerating(true)
+    
+    const currentScroll = window.scrollY || document.documentElement.scrollTop;
+    console.log('Generating heatmap with scroll position:', currentScroll);
     setError(null)
 
     try {
@@ -195,7 +204,7 @@ export default function ResultsPage() {
       // Generate heatmap data based on gaze points
       const heatmapData = analysisData.gazeData.map(point => ({
         x: point.x * (viewportSize.width / window.innerWidth),
-        y: point.y - scrollPosition,
+        y: point.y - scrollY,
         value: 1
       }))
       
@@ -229,7 +238,28 @@ export default function ResultsPage() {
     } finally {
       setIsGenerating(false)
     }
-  }, [analysisData, viewportSize, scrollPosition, screenshotUrl])
+  }, [analysisData, viewportSize, scrollY, screenshotUrl])
+
+  // Handle scroll events to update heatmap and track position
+  useEffect(() => {
+    if (!heatmapGenerated) return;
+    
+    const handleScroll = () => {
+      const scrollPosition = window.scrollY || document.documentElement.scrollTop;
+      setScrollY(scrollPosition);
+      // Re-render heatmap on scroll
+      generateHeatmap();
+    };
+    
+    // Initial scroll position
+    handleScroll();
+    
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, [heatmapGenerated, generateHeatmap]);
 
   // Download PNG of the heatmap
   const downloadPng = useCallback(() => {
