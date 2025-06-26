@@ -1,10 +1,10 @@
 "use client"
 
-import { useEffect, useState, useRef, useCallback } from "react"
-import { useSearchParams } from "next/navigation"
+import { useEffect, useState, useRef, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { BarChart3, AlertTriangle, Loader2, Eye, Download, RotateCcw } from "lucide-react"
+import { BarChart3, AlertTriangle, Loader2, Eye, Download, RotateCcw, Clock, Maximize2 } from "lucide-react"
+// Heatmap implementation using canvas for better performance and visual quality
 
 interface GazePoint {
   x: number
@@ -15,11 +15,25 @@ interface GazePoint {
 
 interface AnalysisData {
   url: string
+  timestamp: string
+  duration: number
   gazeData: GazePoint[]
-  analysisTime: number
-  timestamp: number
   pageHeight: number
-  screenshotData?: string
+  pageWidth: number
+  viewportHeight: number
+  viewportWidth: number
+  scrollData: any[]
+  clicks: any[]
+  screenshot?: string
+  analysis: {
+    heatmap: {
+      hotSpots: {
+        x: number
+        y: number
+        intensity: number
+      }[]
+    }
+  }
 }
 
 interface ViewportSize {
@@ -27,137 +41,299 @@ interface ViewportSize {
   height: number
 }
 
-interface HeatmapStats {
-  totalPoints: number
-  totalTime: number
-  frequency: number
-  avgPosition: { x: number; y: number }
-  maxScroll: number
+interface HeatmapDataPoint {
+  x: number;
+  y: number;
+  value: number;
 }
 
-export default function ResultsPage() {
-  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null)
-  const [heatmapGenerated, setHeatmapGenerated] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [scrollY, setScrollY] = useState(0)
-  const [screenshotUrl, setScreenshotUrl] = useState<string>("")
-  const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 })
-  const [scrollPosition, setScrollPosition] = useState(0)
-  const [pageHeight, setPageHeight] = useState(0)
-  
-  const containerRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const imageRef = useRef<HTMLImageElement>(null)
+interface HeatmapStats {
+  totalPoints: number;
+  totalTime: number;
+  frequency: number;
+  avgPosition: { x: number; y: number };
+  maxScroll: number;
+}
 
-  // Generate heatmap statistics
-  const getHeatmapStats = useCallback((): HeatmapStats => {
+// Function to draw the website screenshot as background
+const drawScreenshotBackground = (
+  canvas: HTMLCanvasElement, 
+  ctx: CanvasRenderingContext2D, 
+  image: HTMLImageElement
+): void => {
+  if (!image.complete) return;
+  
+  // Calculate aspect ratio to maintain proportions
+  const imageAspect = image.width / image.height;
+  const canvasAspect = canvas.width / canvas.height;
+  
+  let renderWidth = canvas.width;
+  let renderHeight = canvas.height;
+  let offsetX = 0;
+  let offsetY = 0;
+  
+  // Fit the image to canvas while maintaining aspect ratio
+  if (imageAspect > canvasAspect) {
+    // Image is wider than canvas
+    renderHeight = canvas.width / imageAspect;
+    offsetY = (canvas.height - renderHeight) / 2;
+  } else {
+    // Image is taller than canvas
+    renderWidth = canvas.height * imageAspect;
+    offsetX = (canvas.width - renderWidth) / 2;
+  }
+  
+  // Clear and draw the image
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, offsetX, offsetY, renderWidth, renderHeight);
+};
+
+// Heatmap implementation using canvas
+const drawHeatmap = (
+  canvas: HTMLCanvasElement, 
+  points: {x: number, y: number}[], 
+  width: number, 
+  height: number,
+  radius: number = 50,
+  blur: number = 15
+) => {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Clear canvas
+  ctx.clearRect(0, 0, width, height);
+  
+  // Create a temporary canvas for the heatmap
+  const heatmapCanvas = document.createElement('canvas');
+  heatmapCanvas.width = width;
+  heatmapCanvas.height = height;
+  const heatmapCtx = heatmapCanvas.getContext('2d');
+  if (!heatmapCtx) return;
+
+  // Draw points with radial gradients
+  points.forEach(point => {
+    const x = point.x;
+    const y = point.y;
+    
+    // Create gradient
+    const gradient = heatmapCtx.createRadialGradient(
+      x, y, 0,
+      x, y, radius
+    );
+    
+    // Color stops for the gradient (red to yellow to blue)
+    gradient.addColorStop(0, 'rgba(255, 0, 0, 0.8)');
+    gradient.addColorStop(0.5, 'rgba(255, 255, 0, 0.5)');
+    gradient.addColorStop(1, 'rgba(0, 0, 255, 0.1)');
+    
+    // Draw the gradient
+    heatmapCtx.beginPath();
+    heatmapCtx.arc(x, y, radius, 0, Math.PI * 2);
+    heatmapCtx.fillStyle = gradient;
+    heatmapCtx.fill();
+  });
+  
+  // Apply blur effect
+  if (blur > 0) {
+    ctx.filter = `blur(${blur}px)`;
+  }
+  
+  // Draw the heatmap onto the main canvas
+  ctx.drawImage(heatmapCanvas, 0, 0);
+  
+  // Reset filter
+  ctx.filter = 'none';
+  
+  // Apply color mapping (heat colors)
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    
+    // Convert to grayscale to get intensity
+    const intensity = (r + g + b) / 3;
+    
+    if (intensity > 0) {
+      // Map intensity to heat colors
+      // Red (high intensity) -> Yellow -> Green -> Blue (low intensity)
+      if (intensity > 200) {
+        // Red to Yellow
+        const t = (intensity - 200) / 55;
+        data[i] = 255;
+        data[i + 1] = Math.floor(255 * t);
+        data[i + 2] = 0;
+      } else if (intensity > 100) {
+        // Yellow to Green
+        const t = (intensity - 100) / 100;
+        data[i] = Math.floor(255 * (1 - t));
+        data[i + 1] = 255;
+        data[i + 2] = 0;
+      } else {
+        // Green to Blue
+        const t = intensity / 100;
+        data[i] = 0;
+        data[i + 1] = Math.floor(255 * t);
+        data[i + 2] = Math.floor(255 * (1 - t));
+      }
+      
+      // Adjust alpha based on intensity
+      data[i + 3] = Math.min(255, intensity * 1.5);
+    }
+  }
+  
+  ctx.putImageData(imageData, 0, 0);
+};
+
+export default function ResultsPage() {
+  // State for analysis data and loading states
+  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [heatmapGenerated, setHeatmapGenerated] = useState(false);
+  const [screenshotUrl, setScreenshotUrl] = useState<string>("");
+  const [scrollY, setScrollY] = useState(0);
+  const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
+  const [scrollPosition, setScrollPosition] = useState(0);
+  const [pageHeight, setPageHeight] = useState(0);
+  
+  // Refs
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+
+  // Get heatmap statistics
+  const getHeatmapStats = useCallback((): { min: number; max: number; avg: number } => {
+    if (!analysisData?.gazeData?.length) return { min: 0, max: 0, avg: 0 };
+
+    // Count occurrences of each point to estimate intensity
+    const pointCounts: { [key: string]: number } = {};
+    
+    analysisData.gazeData.forEach((point: GazePoint) => {
+      const key = `${Math.round(point.x)},${Math.round(point.y)}`;
+      pointCounts[key] = (pointCounts[key] || 0) + 1;
+    });
+
+    const values = Object.values(pointCounts);
+    if (values.length === 0) return { min: 0, max: 0, avg: 0 };
+    
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+
+    return { min, max, avg };
+  }, [analysisData?.gazeData]);
+  
+  // Calculate analysis stats
+  const analysisStats = useMemo(() => {
     if (!analysisData) {
       return {
         totalPoints: 0,
         totalTime: 0,
         frequency: 0,
-        avgPosition: { x: 0, y: 0 },
         maxScroll: 0
-      }
+      };
     }
-
-    const { gazeData, analysisTime } = analysisData
-    const totalPoints = gazeData.length
-    const totalTime = Math.round(analysisTime / 1000)
-    const frequency = totalPoints > 0 ? parseFloat((totalPoints / analysisTime * 1000).toFixed(2)) : 0
     
-    // Calculate average position
-    let sumX = 0
-    let sumY = 0
-    let maxScroll = 0
+    const totalPoints = analysisData.gazeData.length;
+    const totalTime = analysisData.duration / 1000; // Convert to seconds
+    const frequency = totalTime > 0 ? totalPoints / totalTime : 0;
     
-    gazeData.forEach(point => {
-      sumX += point.x
-      sumY += point.y
-      maxScroll = Math.max(maxScroll, point.scrollY || 0)
-    })
-    
-    const avgX = totalPoints > 0 ? Math.round(sumX / totalPoints) : 0
-    const avgY = totalPoints > 0 ? Math.round(sumY / totalPoints) : 0
+    let maxScroll = 0;
+    analysisData.gazeData.forEach(point => {
+      maxScroll = Math.max(maxScroll, point.scrollY || 0);
+    });
     
     return {
       totalPoints,
       totalTime,
-      frequency,
-      avgPosition: { x: avgX, y: avgY },
+      frequency: Number(frequency.toFixed(2)),
       maxScroll
-    }
-  }, [analysisData])
-
-  // Load analysis data and take screenshot
+    };
+  }, [analysisData]);
+  
+  // Get heatmap stats
+  const heatmapStats = getHeatmapStats();
+    
+  // Load analysis data and fetch screenshot
   useEffect(() => {
     const loadData = async () => {
       try {
-        const savedData = localStorage.getItem("gazeAnalysisData")
-        if (savedData) {
-          const data: AnalysisData = JSON.parse(savedData)
-          setAnalysisData(data)
-          
-          // Take screenshot of the analyzed URL
-          if (data.url) {
-            try {
-              const width = Math.min(window.innerWidth, 1920); // Limit max width
-              const height = Math.min(window.innerHeight, 1080);
-              const response = await fetch(
-                `/api/proxy?url=${encodeURIComponent(data.url)}` +
-                `&width=${width}` +
-                `&height=${height}` +
-                `&deviceScaleFactor=${window.devicePixelRatio || 1}`
-              )
-              
-              if (!response.ok) {
-                throw new Error(`Failed to capture screenshot: ${response.status}`)
-              }
-              
-              const blob = await response.blob()
-              const url = URL.createObjectURL(blob)
-              setScreenshotUrl(url)
-              
-              // Get page height from response headers
-              const pageHeight = parseInt(response.headers.get('X-Page-Height') || '0')
-              setPageHeight(pageHeight)
-              
-              // Set viewport size
-              setViewportSize({
-                width,
-                height: Math.min(pageHeight, 10000) // Limit height for rendering
-              })
-              
-            } catch (error) {
-              console.error('Error capturing screenshot:', error)
-              setError('Не удалось загрузить скриншот страницы')
+        // Get URL from query parameters
+        const searchParams = new URLSearchParams(window.location.search);
+        const websiteUrl = searchParams.get('url');
+        
+        if (!websiteUrl) {
+          setError("URL веб-сайта не указан");
+          setIsLoading(false);
+          return;
+        }
+        
+        // Load analysis data from localStorage
+        const savedData = localStorage.getItem('gazeAnalysisData');
+        if (!savedData) {
+          setError("Данные анализа не найдены");
+          setIsLoading(false);
+          return;
+        }
+        
+        const analysisData = JSON.parse(savedData);
+        
+        // Create analysis data object
+        const data: AnalysisData = {
+          url: websiteUrl,
+          timestamp: new Date(analysisData.timestamp).toISOString(),
+          duration: analysisData.analysisTime * 1000, // Convert to ms
+          gazeData: analysisData.gazeData,
+          pageHeight: analysisData.pageHeight,
+          pageWidth: analysisData.viewportWidth,
+          viewportHeight: analysisData.viewportHeight,
+          viewportWidth: analysisData.viewportWidth,
+          scrollData: [],
+          clicks: [],
+          analysis: {
+            heatmap: {
+              hotSpots: []
             }
           }
-        } else {
-          setError("Данные анализа не найдены")
-        }
+        };
+        
+        setAnalysisData(data);
+        
+        // Set viewport size
+        setViewportSize({
+          width: analysisData.viewportWidth,
+          height: analysisData.viewportHeight
+        });
+        
+        // Set page height
+        setPageHeight(analysisData.pageHeight);
+        
+        // Fetch fresh screenshot from the server
+        const screenshotUrl = `/api/proxy?url=${encodeURIComponent(websiteUrl)}`;
+        setScreenshotUrl(screenshotUrl);
+        
       } catch (error) {
-        console.error("Error loading analysis data:", error)
-        setError("Ошибка загрузки данных анализа")
+        console.error('Error loading data:', error);
+        setError('Ошибка загрузки данных анализа');
       } finally {
-        setIsLoading(false)
+        setIsLoading(false);
       }
-    }
+    };
     
-    loadData()
+    loadData();
     
     // Cleanup
     return () => {
-      if (screenshotUrl) {
-        URL.revokeObjectURL(screenshotUrl)
-      }
-    }
-  }, [screenshotUrl])
+      // Cleanup if needed
+    };
+  }, [])
 
   // Handle scroll events
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>): void => {
     if (containerRef.current) {
       const scrollY = containerRef.current.scrollTop
       setScrollPosition(scrollY)
@@ -165,80 +341,142 @@ export default function ResultsPage() {
   }, [])
 
   // Handle image load
-  const handleImageLoad = useCallback(() => {
+  const handleImageLoad = useCallback((): void => {
     if (imageRef.current) {
-      setViewportSize(prev => ({
-        ...prev,
-        height: Math.min(imageRef.current?.naturalHeight || 0, 10000)
-      }))
+      setViewportSize({
+        width: imageRef.current.naturalWidth,
+        height: imageRef.current.naturalHeight
+      });
     }
   }, [])
 
-  // Generate heatmap with better error handling and scroll tracking
-  const generateHeatmap = useCallback(() => {
-    if (!canvasRef.current || !analysisData || !screenshotUrl || !imageRef.current) {
+  // Generate heatmap on top of the website screenshot
+  const generateHeatmap = useCallback((): void => {
+    if (!analysisData || !canvasRef.current || !imageRef.current) {
       console.error('Missing required refs or data');
       return;
     }
     
-    const currentScroll = window.scrollY || document.documentElement.scrollTop;
-    console.log('Generating heatmap with scroll position:', currentScroll);
-    setError(null)
+    setError(null);
+    setIsGenerating(true);
 
     try {
-      const canvas = canvasRef.current
-      const ctx = canvas.getContext('2d')
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        throw new Error("Не удалось получить контекст canvas");
+      }
+
+      // Set canvas size to match the screenshot
+      const width = imageRef.current.naturalWidth || window.innerWidth;
+      const height = imageRef.current.naturalHeight || window.innerHeight * 2;
       
-      if (!ctx) return
-      
-      // Set canvas dimensions to match the screenshot
-      canvas.width = viewportSize.width
-      canvas.height = viewportSize.height
-      
-      // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      
+      canvas.width = width;
+      canvas.height = height;
+
       // Draw the screenshot as background
-      ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height)
+      drawScreenshotBackground(canvas, ctx, imageRef.current);
       
-      // Generate heatmap data based on gaze points
-      const heatmapData = analysisData.gazeData.map(point => ({
-        x: point.x * (viewportSize.width / window.innerWidth),
-        y: point.y - scrollY,
-        value: 1
-      }))
+      // Create a temporary canvas for the heatmap
+      const heatmapCanvas = document.createElement('canvas');
+      heatmapCanvas.width = width;
+      heatmapCanvas.height = height;
+      const heatmapCtx = heatmapCanvas.getContext('2d');
       
-      // Heatmap rendering
-      const radius = 50
-      const intensity = 0.8
+      if (!heatmapCtx) {
+        throw new Error("Не удалось создать контекст для тепловой карты");
+      }
       
-      heatmapData.forEach(point => {
-        if (point.y >= 0 && point.y <= viewportSize.height) {
-          const gradient = ctx.createRadialGradient(
-            point.x, point.y, 0,
-            point.x, point.y, radius
-          )
-          gradient.addColorStop(0, `rgba(255, 0, 0, ${intensity})`)
-          gradient.addColorStop(1, 'rgba(255, 0, 0, 0)')
+      // Initialize heatmap with transparent background
+      heatmapCtx.clearRect(0, 0, width, height);
 
-          ctx.fillStyle = gradient
-          ctx.fillRect(
-            point.x - radius,
-            point.y - radius,
-            radius * 2,
-            radius * 2
-          )
+      // Create image data for the heatmap
+      const heatmapData = heatmapCtx.createImageData(width, height);
+      const data = heatmapData.data;
+
+      // Initialize with transparent pixels
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = 0;        // Red
+        data[i + 1] = 0;    // Green
+        data[i + 2] = 0;    // Blue
+        data[i + 3] = 0;    // Alpha
+      }
+
+
+      // Create heat map from gaze data, accounting for scroll position
+      analysisData.gazeData.forEach((point: GazePoint) => {
+        const radius = 40;
+        const intensity = 0.4;
+
+        // Scale points to match canvas size
+        const scaleX = canvas.width / window.innerWidth;
+        const scaleY = canvas.height / (analysisData.pageHeight || window.innerHeight * 2);
+        
+        const x = Math.round(point.x * scaleX);
+        const y = Math.round((point.y + (point.scrollY || 0)) * scaleY);
+
+        for (let dx = -radius; dx <= radius; dx++) {
+          for (let dy = -radius; dy <= radius; dy++) {
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance <= radius) {
+              const px = x + dx;
+              const py = y + dy;
+
+              if (px >= 0 && px < canvas.width && py >= 0 && py < canvas.height) {
+                const pixelIndex = (py * canvas.width + px) * 4;
+                const alpha = intensity * (1 - distance / radius);
+
+                // Accumulate heat values
+                const currentAlpha = data[pixelIndex + 3] / 255;
+                const newAlpha = Math.min(currentAlpha + alpha, 1);
+
+                // Create heat gradient (blue -> green -> yellow -> red)
+                if (newAlpha < 0.25) {
+                  data[pixelIndex] = 0;
+                  data[pixelIndex + 1] = 0;
+                  data[pixelIndex + 2] = 255;
+                } else if (newAlpha < 0.5) {
+                  data[pixelIndex] = 0;
+                  data[pixelIndex + 1] = 255;
+                  data[pixelIndex + 2] = 0;
+                } else if (newAlpha < 0.75) {
+                  data[pixelIndex] = 255;
+                  data[pixelIndex + 1] = 255;
+                  data[pixelIndex + 2] = 0;
+                } else {
+                  data[pixelIndex] = 255;
+                  data[pixelIndex + 1] = 0;
+                  data[pixelIndex + 2] = 0;
+                }
+
+                data[pixelIndex + 3] = Math.min(newAlpha * 255, 255);
+              }
+            }
+          }
         }
-      })
+      });
 
-      setHeatmapGenerated(true)
+      // Apply the heatmap data to the temporary canvas
+      heatmapCtx.putImageData(heatmapData, 0, 0);
+
+      // Composite the heatmap over the screenshot
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(heatmapCanvas, 0, 0);
+      
+      // Reset composite settings
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1.0;
+      
+      setHeatmapGenerated(true);
     } catch (error) {
-      console.error('Error generating heatmap:', error)
-      setError('Ошибка при генерации тепловой карты')
+      console.error('Error generating heatmap:', error);
+      setError('Ошибка при генерации тепловой карты');
     } finally {
-      setIsGenerating(false)
+      setIsGenerating(false);
     }
-  }, [analysisData, viewportSize, scrollY, screenshotUrl])
+  }, [analysisData, screenshotUrl, viewportSize, scrollPosition]);
 
   // Handle scroll events to update heatmap and track position
   useEffect(() => {
@@ -298,18 +536,30 @@ export default function ResultsPage() {
   }, [viewportSize])
 
   // Reset heatmap
-  const resetHeatmap = useCallback(() => {
+  const resetHeatmap = useCallback((): void => {
     setHeatmapGenerated(false)
-    if (canvasRef.current && imageRef.current) {
-      const ctx = canvasRef.current.getContext('2d')
+    // Reset canvas when clearing heatmap
+    if (canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
-        ctx.drawImage(imageRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height)
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Redraw the background
+        if (analysisData) {
+          // Use a simple background if no screenshot is available
+        ctx.fillStyle = '#f5f5f5';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Add some placeholder text
+        ctx.fillStyle = '#333';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Скриншот не доступен', canvas.width / 2, canvas.height / 2);
+        ctx.fillText(analysisData.url, canvas.width / 2, canvas.height / 2 + 30);
+        }
       }
     }
-  }, [])
-
-  const stats = getHeatmapStats()
+  }, [analysisData])
 
   if (isLoading) {
     return (
@@ -344,119 +594,170 @@ export default function ResultsPage() {
           </CardContent>
         </Card>
       </div>
-    )
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-12 w-12 animate-spin text-primary" />
+          <p className="text-lg">Загрузка данных анализа...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!analysisData) {
+    return (
+      <div className="container mx-auto p-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Данные не найдены</CardTitle>
+            <CardDescription>
+              Не удалось загрузить данные анализа. Пожалуйста, попробуйте снова.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => window.location.reload()}>
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Обновить страницу
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
     <div className="container mx-auto p-4">
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Результаты анализа</CardTitle>
-          <CardDescription>
-            Анализ страницы: {analysisData?.url || 'Неизвестный URL'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-blue-50 p-4 rounded-lg">
-              <p className="text-sm text-blue-600">Всего взглядов</p>
-              <p className="text-2xl font-bold">{stats.totalPoints}</p>
-            </div>
-            <div className="bg-green-50 p-4 rounded-lg">
-              <p className="text-sm text-green-600">Общее время</p>
-              <p className="text-2xl font-bold">{stats.totalTime} сек</p>
-            </div>
-            <div className="bg-purple-50 p-4 rounded-lg">
-              <p className="text-sm text-purple-600">Частота взглядов</p>
-              <p className="text-2xl font-bold">{stats.frequency} взг/сек</p>
-            </div>
-            <div className="bg-yellow-50 p-4 rounded-lg">
-              <p className="text-sm text-yellow-600">Макс. прокрутка</p>
-              <p className="text-2xl font-bold">{stats.maxScroll}px</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2 mb-4">
-            <Button 
-              onClick={generateHeatmap} 
-              disabled={isGenerating || heatmapGenerated}
-              className="flex items-center gap-2"
-            >
-              {isGenerating ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Генерация...
-                </>
-              ) : (
-                <>
+      <div className="space-y-6">
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Результаты анализа</CardTitle>
+            <CardDescription>
+              Анализ страницы: {analysisData?.url || 'Неизвестный URL'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                <div className="flex items-center gap-2 text-blue-600 mb-1">
+                  <BarChart3 className="h-4 w-4" />
+                  <span className="text-sm font-medium">Всего точек</span>
+                </div>
+                <p className="text-2xl font-bold">{analysisStats.totalPoints.toLocaleString()}</p>
+              </div>
+              <div className="bg-green-50 p-4 rounded-lg border border-green-100">
+                <div className="flex items-center gap-2 text-green-600 mb-1">
+                  <Clock className="h-4 w-4" />
+                  <span className="text-sm font-medium">Время анализа</span>
+                </div>
+                <p className="text-2xl font-bold">{analysisStats.totalTime.toFixed(1)} сек</p>
+              </div>
+              <div className="bg-purple-50 p-4 rounded-lg border border-purple-100">
+                <div className="flex items-center gap-2 text-purple-600 mb-1">
                   <Eye className="h-4 w-4" />
-                  {heatmapGenerated ? 'Тепловая карта сгенерирована' : 'Сгенерировать тепловую карту'}
-                </>
-              )}
-            </Button>
-            
-            <Button 
-              variant="outline" 
-              onClick={resetHeatmap}
-              disabled={!heatmapGenerated}
-              className="flex items-center gap-2"
-            >
-              <RotateCcw className="h-4 w-4" />
-              Сбросить
-            </Button>
-            
-            <Button 
-              variant="outline" 
-              onClick={downloadPng}
-              disabled={!heatmapGenerated}
-              className="flex items-center gap-2"
-            >
-              <Download className="h-4 w-4" />
-              Скачать PNG
-            </Button>
-            
-            <Button 
-              variant="outline" 
-              onClick={downloadPdf}
-              disabled={!heatmapGenerated}
-              className="flex items-center gap-2"
-            >
-              <Download className="h-4 w-4" />
-              Скачать PDF
-            </Button>
-          </div>
-
-          <div 
-            ref={containerRef}
-            onScroll={handleScroll}
-            className="border rounded-lg overflow-auto bg-gray-50"
-            style={{ 
-              height: '70vh',
-              maxHeight: '800px',
-              position: 'relative'
-            }}
-          >
-            <div style={{ position: 'relative' }}>
-              <img
-                ref={imageRef}
-                src={screenshotUrl}
-                alt="Screenshot of analyzed page"
-                className="w-full"
-                onLoad={handleImageLoad}
-                style={{ display: 'none' }}
-              />
-              <canvas
-                ref={canvasRef}
-                className="w-full"
-                style={{
-                  border: '1px solid #e5e7eb',
-                  display: 'block'
-                }}
-              />
+                  <span className="text-sm font-medium">Частота взгляда</span>
+                </div>
+                <p className="text-2xl font-bold">{analysisStats.frequency}/сек</p>
+              </div>
+              <div className="bg-amber-50 p-4 rounded-lg border border-amber-100">
+                <div className="flex items-center gap-2 text-amber-600 mb-1">
+                  <Maximize2 className="h-4 w-4" />
+                  <span className="text-sm font-medium">Макс. прокрутка</span>
+                </div>
+                <p className="text-2xl font-bold">{Math.round(analysisStats.maxScroll)}px</p>
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+
+            <div className="flex flex-wrap gap-2 mb-4">
+              <Button 
+                onClick={generateHeatmap} 
+                disabled={isGenerating || heatmapGenerated}
+                className="flex items-center gap-2"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Генерация...
+                  </>
+                ) : (
+                  <>
+                    <Eye className="h-4 w-4" />
+                    {heatmapGenerated ? 'Тепловая карта сгенерирована' : 'Сгенерировать тепловую карту'}
+                  </>
+                )}
+              </Button>
+              
+              <Button 
+                variant="outline" 
+                onClick={resetHeatmap}
+                disabled={!heatmapGenerated}
+                className="flex items-center gap-2"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Сбросить
+              </Button>
+              
+              <Button 
+                variant="outline" 
+                onClick={downloadPng}
+                disabled={!heatmapGenerated}
+                className="flex items-center gap-2"
+              >
+                <Download className="h-4 w-4" />
+                Скачать PNG
+              </Button>
+              
+              <Button 
+                variant="outline" 
+                onClick={downloadPdf}
+                disabled={!heatmapGenerated}
+                className="flex items-center gap-2"
+              >
+                <Download className="h-4 w-4" />
+                Скачать PDF
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-auto relative" ref={containerRef} onScroll={handleScroll}>
+              <div 
+                className="relative mx-auto" 
+                style={{
+                  width: viewportSize.width,
+                  height: viewportSize.height,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  position: 'relative'
+                }}
+              >
+                {screenshotUrl && (
+                  <>
+                    <img
+                      ref={imageRef}
+                      src={screenshotUrl}
+                      alt="Screenshot of analyzed page"
+                      className="block w-full h-auto"
+                      onLoad={handleImageLoad}
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-300 ${
+                        heatmapGenerated ? 'opacity-80' : 'opacity-0'
+                      }`}
+                      style={{
+                        mixBlendMode: 'multiply',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
-  )
+  );
 }
