@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import puppeteer, { BrowserLaunchArgumentOptions, LaunchOptions } from 'puppeteer-core';
+import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 
-// Extend the LaunchOptions type to include our custom options
-interface CustomLaunchOptions extends LaunchOptions {
+// Use Puppeteer's LaunchOptions type directly
+import type { LaunchOptions } from 'puppeteer-core';
+
+interface BrowserOptions extends LaunchOptions {
   args: string[];
   defaultViewport: {
     width: number;
@@ -12,22 +14,20 @@ interface CustomLaunchOptions extends LaunchOptions {
     isMobile: boolean;
     hasTouch: boolean;
   };
+  executablePath: string;
+  headless: boolean | 'shell';
+  ignoreHTTPSErrors?: boolean;
 }
 
 export const dynamic = 'force-dynamic'; // Force dynamic route handling
 
 // Chromium options for better serverless compatibility
-const getBrowserOptions = async (width: number, height: number, deviceScaleFactor: number): Promise<CustomLaunchOptions> => {
+const getBrowserOptions = async (width: number, height: number, deviceScaleFactor: number): Promise<BrowserOptions> => {
   const isDev = process.env.NODE_ENV === 'development';
   
   try {
-    // In production, ensure the binary is available
-    if (!isDev) {
-      await chromium.font('https://raw.githack.com/googlei18n/noto-emoji/master/fonts/NotoColorEmoji.ttf');
-    }
-
-    // Get the executable path
     let executablePath: string;
+    
     if (isDev) {
       // Use local Chrome in development
       executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -35,6 +35,11 @@ const getBrowserOptions = async (width: number, height: number, deviceScaleFacto
       // In production, use the path from @sparticuz/chromium
       const path = await chromium.executablePath;
       executablePath = typeof path === 'string' ? path : await path();
+      
+      // Ensure the binary is available in production
+      if (!executablePath) {
+        throw new Error('Failed to get Chromium executable path');
+      }
     }
 
     // Common arguments for both development and production
@@ -49,9 +54,13 @@ const getBrowserOptions = async (width: number, height: number, deviceScaleFacto
       '--single-process',
       '--disable-gpu',
       '--disable-software-rasterizer',
+      '--disable-setuid-sandbox',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-site-isolation-trials'
     ];
 
-    const options: CustomLaunchOptions = {
+    const options: BrowserOptions = {
       args,
       defaultViewport: {
         width,
@@ -61,15 +70,11 @@ const getBrowserOptions = async (width: number, height: number, deviceScaleFacto
         hasTouch: width <= 1024,
       },
       executablePath,
-      headless: true, // Always run in headless mode in production
+      headless: true, // Use standard headless mode
       ignoreHTTPSErrors: true,
     };
 
-    console.log('Browser options:', {
-      ...options,
-      executablePath: executablePath ? 'set' : 'not set'
-    });
-
+    console.log('Browser options configured');
     return options;
   } catch (error) {
     console.error('Error getting browser options:', error);
