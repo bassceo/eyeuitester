@@ -1,8 +1,43 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
 
-// Helper function to delay execution
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+export const dynamic = 'force-dynamic'; // Force dynamic route handling
+
+// Chromium options for better serverless compatibility
+const getBrowserOptions = async (width: number, height: number, deviceScaleFactor: number) => {
+  const isDev = process.env.NODE_ENV === 'development';
+
+  // Use local Chrome in development, Sparticuz in production
+  const executablePath = isDev
+    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' // Update this path for your local Chrome
+    : await chromium.executablePath();
+
+  // Get Sparticuz Chromium args
+  const args = [
+    ...chromium.args,
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+  ];
+
+  return {
+    args,
+    defaultViewport: {
+      width,
+      height: Math.floor(height * 0.9),
+      deviceScaleFactor,
+      isMobile: width <= 768,
+      hasTouch: width <= 1024,
+    },
+    executablePath: typeof executablePath === 'string' ? executablePath : await executablePath,
+    headless: true,
+    ignoreHTTPSErrors: true,
+  };
+};
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -20,36 +55,15 @@ export async function GET(request: Request) {
     // Validate URL
     const url = new URL(targetUrl);
     if (!['http:', 'https:'].includes(url.protocol)) {
-      return new Response('Invalid URL protocol', { status: 400 }); 
+      return new Response('Invalid URL protocol', { status: 400 });
     }
 
-    // Launch browser with additional arguments for stability
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-site-isolation-trials'
-      ] as const,
-      defaultViewport: {
-        width,
-        height: Math.floor(height * 0.9), // Slightly smaller to ensure content fits
-        deviceScaleFactor,
-        isMobile: width <= 768, // Consider mobile if width is small
-        hasTouch: width <= 1024, // Enable touch for tablets and mobiles
-      },
-    });
+    // Launch browser with Sparticuz Chromium
+    const browserOptions = await getBrowserOptions(width, height, deviceScaleFactor);
+    browser = await puppeteer.launch(browserOptions);
 
     const page = await browser.newPage();
-    
+
     try {
       // Set user agent to avoid bot detection
       await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -100,33 +114,51 @@ export async function GET(request: Request) {
       // Set up viewport and navigation settings
       console.log(`Navigating to: ${targetUrl} with viewport ${width}x${height}`);
       
-      // Set a white background to avoid black screenshots
+      // Set navigation timeout and ensure page is fully loaded
       await page.setDefaultNavigationTimeout(60000);
       
       try {
-        // Set viewport before navigation
-        await page.setViewport({
-          width,
-          height: Math.floor(height * 0.9),
-          deviceScaleFactor,
-          isMobile: width <= 768,
-          hasTouch: width <= 1024
-        });
-        
         // Set user agent based on device type
         const userAgent = width <= 768 
           ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
           : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        await page.setUserAgent(userAgent);
         
-        // Navigate to the page
-        const response = await page.goto(targetUrl, {
-          waitUntil: 'networkidle2',
-          timeout: 60000,
+        await page.setUserAgent(userAgent);
+        await page.setExtraHTTPHeaders({
+          'Accept-Language': 'en-US,en;q=0.9',
         });
         
-        if (!response || !response.ok()) {
-          throw new Error(`Failed to load page: ${response?.status()}`);
+        // Block unnecessary resources for faster loading
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+          const resourceType = request.resourceType();
+          if (['image', 'font', 'stylesheet', 'media'].includes(resourceType)) {
+            request.abort();
+          } else {
+            request.continue();
+          }
+        });
+        
+        // Navigate to the page with retry logic
+        let response = null;
+        const maxRetries = 2;
+        let lastError;
+        
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            response = await page.goto(targetUrl, {
+              waitUntil: attempt === maxRetries ? 'domcontentloaded' : 'networkidle2',
+              timeout: 30000,
+            });
+            
+            if (response && response.ok()) break;
+            
+          } catch (error) {
+            lastError = error;
+            if (attempt === maxRetries) throw error;
+            console.log(`Navigation attempt ${attempt + 1} failed, retrying...`, error);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
         
         // Wait for the page to be fully rendered

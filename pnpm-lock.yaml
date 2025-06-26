@@ -92,6 +92,9 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: 1.1.6
         version: 1.1.6(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      '@sparticuz/chromium':
+        specifier: ^137.0.1
+        version: 137.0.1
       autoprefixer:
         specifier: ^10.4.20
         version: 10.4.21(postcss@8.5.6)
@@ -128,6 +131,9 @@ importers:
       puppeteer:
         specifier: ^24.10.2
         version: 24.10.2(typescript@5.8.3)
+      puppeteer-core:
+        specifier: ^24.10.2
+        version: 24.10.2
       react:
         specifier: ^19
         version: 19.1.0
@@ -1150,6 +1156,10 @@ packages:
   '@radix-ui/rect@1.1.0':
     resolution: {integrity: sha512-A9+lCBZoaMJlVKcRBz2YByCG+Cp2t6nAnMnNba+XiWxnj6r4JUFqfsgwocMBZU9LPtdxC6wB56ySYpc7LQIoJg==}
 
+  '@sparticuz/chromium@137.0.1':
+    resolution: {integrity: sha512-9ixW23xjzIgSwBPLhWFOnrJNsnEw4dQWZqGzBCFGwGVuBPkNiJHO5VAGKezXj81J0wMYwP04tLlJFjsN5z4ROw==}
+    engines: {node: '>=20.11.0'}
+
   '@swc/counter@0.1.3':
     resolution: {integrity: sha512-e2BR4lsJkkRlKZ/qCHPw9ZaSxc0MVUd7gtbtaB7aMvHeJVYe8sOB8DBZkP2DtISHGSku9sCK6T6cnY0CtXrOCQ==}
 
@@ -1597,6 +1607,15 @@ packages:
   fill-range@7.1.1:
     resolution: {integrity: sha512-YsGpe3WHLK8ZYi4tWDg2Jy3ebRz2rXowDxnld4bkQB00cc/1Zw9AWnC0i9ztDJitivtQvaI9KaLyKrc+hBW0yg==}
     engines: {node: '>=8'}
+
+  follow-redirects@1.15.9:
+    resolution: {integrity: sha512-gew4GsXizNgdoRyqmyfMHyAmXsZDk6mHkSxZFCzW9gwlbtOW44CDtYavM+y+72qD/Vq2l550kMF52DT8fOLJqQ==}
+    engines: {node: '>=4.0'}
+    peerDependencies:
+      debug: '*'
+    peerDependenciesMeta:
+      debug:
+        optional: true
 
   foreground-child@3.3.1:
     resolution: {integrity: sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw==}
@@ -3292,6 +3311,14 @@ snapshots:
 
   '@radix-ui/rect@1.1.0': {}
 
+  '@sparticuz/chromium@137.0.1':
+    dependencies:
+      follow-redirects: 1.15.9
+      tar-fs: 3.0.10
+    transitivePeerDependencies:
+      - bare-buffer
+      - debug
+
   '@swc/counter@0.1.3': {}
 
   '@swc/helpers@0.5.15':
@@ -3716,6 +3743,8 @@ snapshots:
   fill-range@7.1.1:
     dependencies:
       to-regex-range: 5.0.1
+
+  follow-redirects@1.15.9: {}
 
   foreground-child@3.3.1:
     dependencies:
