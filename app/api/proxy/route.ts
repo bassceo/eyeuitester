@@ -1,42 +1,80 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer-core';
+import puppeteer, { BrowserLaunchArgumentOptions, LaunchOptions } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
+
+// Extend the LaunchOptions type to include our custom options
+interface CustomLaunchOptions extends LaunchOptions {
+  args: string[];
+  defaultViewport: {
+    width: number;
+    height: number;
+    deviceScaleFactor: number;
+    isMobile: boolean;
+    hasTouch: boolean;
+  };
+}
 
 export const dynamic = 'force-dynamic'; // Force dynamic route handling
 
 // Chromium options for better serverless compatibility
-const getBrowserOptions = async (width: number, height: number, deviceScaleFactor: number) => {
+const getBrowserOptions = async (width: number, height: number, deviceScaleFactor: number): Promise<CustomLaunchOptions> => {
   const isDev = process.env.NODE_ENV === 'development';
+  
+  try {
+    // In production, ensure the binary is available
+    if (!isDev) {
+      await chromium.font('https://raw.githack.com/googlei18n/noto-emoji/master/fonts/NotoColorEmoji.ttf');
+    }
 
-  // Use local Chrome in development, Sparticuz in production
-  const executablePath = isDev
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' // Update this path for your local Chrome
-    : await chromium.executablePath();
+    // Get the executable path
+    let executablePath: string;
+    if (isDev) {
+      // Use local Chrome in development
+      executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    } else {
+      // In production, use the path from @sparticuz/chromium
+      const path = await chromium.executablePath;
+      executablePath = typeof path === 'string' ? path : await path();
+    }
 
-  // Get Sparticuz Chromium args
-  const args = [
-    ...chromium.args,
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-  ];
+    // Common arguments for both development and production
+    const args = [
+      ...chromium.args,
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+    ];
 
-  return {
-    args,
-    defaultViewport: {
-      width,
-      height: Math.floor(height * 0.9),
-      deviceScaleFactor,
-      isMobile: width <= 768,
-      hasTouch: width <= 1024,
-    },
-    executablePath: typeof executablePath === 'string' ? executablePath : await executablePath,
-    headless: true,
-    ignoreHTTPSErrors: true,
-  };
+    const options: CustomLaunchOptions = {
+      args,
+      defaultViewport: {
+        width,
+        height: Math.floor(height * 0.9),
+        deviceScaleFactor,
+        isMobile: width <= 768,
+        hasTouch: width <= 1024,
+      },
+      executablePath,
+      headless: true, // Always run in headless mode in production
+      ignoreHTTPSErrors: true,
+    };
+
+    console.log('Browser options:', {
+      ...options,
+      executablePath: executablePath ? 'set' : 'not set'
+    });
+
+    return options;
+  } catch (error) {
+    console.error('Error getting browser options:', error);
+    throw new Error(`Failed to initialize browser: ${error instanceof Error ? error.message : String(error)}`);
+  }
 };
 
 export async function GET(request: Request) {
