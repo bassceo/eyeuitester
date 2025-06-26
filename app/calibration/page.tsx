@@ -41,15 +41,42 @@ function CalibrationContent() {
   // Load WebGazer
   useEffect(() => {
     const loadWebGazer = async () => {
+      // Check if running in browser and if mediaDevices is available
+      if (typeof window === 'undefined' || !navigator.mediaDevices) {
+        console.error('Media devices not available')
+        setCameraPermission("denied")
+        return
+      }
+
+      // Check if we're not on localhost or HTTPS
+      const isLocalhost = window.location.hostname === 'localhost' || 
+                        window.location.hostname === '127.0.0.1';
+      const isHttps = window.location.protocol === 'https:';
+      
+      if (!isLocalhost && !isHttps) {
+        console.error('Camera access requires HTTPS in production')
+        setCameraPermission("denied")
+        return
+      }
+
       try {
         // Request camera permission first
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          } 
+        })
         setCameraPermission("granted")
-        stream.getTracks().forEach((track) => track.stop()) // Stop the stream, WebGazer will handle it
+        
+        // Stop all tracks
+        stream.getTracks().forEach((track) => track.stop())
 
         // Load WebGazer script
         const script = document.createElement("script")
         script.src = "https://webgazer.cs.brown.edu/webgazer.js"
+        script.async = true
         script.onload = () => {
           if (window.webgazer) {
             window.webgazer
@@ -57,14 +84,22 @@ function CalibrationContent() {
                 // Handle gaze data during calibration
               })
               .begin()
+              .catch((err: Error) => {
+                console.error('WebGazer initialization failed:', err)
+                setCameraPermission("denied")
+              })
 
             webgazerRef.current = window.webgazer
             setIsWebGazerLoaded(true)
           }
         }
+        script.onerror = () => {
+          console.error('Failed to load WebGazer script')
+          setCameraPermission("denied")
+        }
         document.head.appendChild(script)
       } catch (error) {
-        console.error("Camera permission denied:", error)
+        console.error("Camera access error:", error)
         setCameraPermission("denied")
       }
     }
